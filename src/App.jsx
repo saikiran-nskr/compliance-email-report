@@ -340,6 +340,7 @@ export default function ComplianceReport() {
   const [croppedImages, setCroppedImages] = useState({});
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [emailReady, setEmailReady] = useState(false);
   const inputRef = useRef(null);
 
   const handleFile = useCallback((f) => {
@@ -419,14 +420,13 @@ export default function ComplianceReport() {
             <span style={S.logoText}>Compliance Audit</span>
           </div>
           <h1 style={S.h1}>Non-Compliance<br/>Email Report</h1>
-          <p style={S.sub}>Upload your audit PDF — parses directly to extract non-compliances, auditor comments, and evidence images. No AI, no API key needed. Everything runs in your browser.</p>
+          <p style={S.sub}>Upload your audit PDF — parses directly to extract non-compliances, auditor comments, and evidence images.</p>
           <div onDragOver={e=>{e.preventDefault();setDragOver(true)}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop} onClick={()=>!loading&&inputRef.current?.click()}
             style={{...S.drop,borderColor:dragOver?"#e11d48":file?"#34d399":"#d1d5db",background:dragOver?"rgba(225,29,72,.03)":file?"rgba(52,211,153,.03)":"#fafafa",cursor:loading?"wait":"pointer"}}>
             <input ref={inputRef} type="file" accept=".pdf" style={{display:"none"}} onChange={e=>handleFile(e.target.files?.[0])}/>
             {!file?(
               <><div style={S.upIcon}><svg width="30" height="30" fill="none" viewBox="0 0 24 24" stroke="#e11d48" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"/></svg></div>
-              <div style={{fontSize:".93rem",fontWeight:600,color:"#374151"}}>Drop audit PDF here or click to browse</div>
-              <div style={{fontSize:".75rem",color:"#9ca3af",marginTop:4}}>Runs locally in your browser — no data sent anywhere</div></>
+              <div style={{fontSize:".93rem",fontWeight:600,color:"#374151"}}>Drop audit PDF here or click to browse</div></>
             ):(
               <div style={{display:"flex",alignItems:"center",gap:12}}>
                 <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="#34d399" strokeWidth="1.5"><path strokeLinecap="round" d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
@@ -458,13 +458,149 @@ export default function ComplianceReport() {
   const appendixItems = ncs.map((nc,i) => ({nc,idx:i})).filter(({nc,idx}) => (croppedImages[idx]?.length > 0) || nc.auditor_comments);
   let appxCounter = 0;
 
+  // ── SEND EMAIL ──
+  const sendEmail = async () => {
+    // Build email-compatible HTML using ONLY tables (no CSS grid/flexbox)
+    const scores = [
+      {l:"Current Score",v:`${info.current_score}/${info.total_score}`,c:"#111827"},
+      {l:"Achievement",v:`${info.percentage}%`,c:(info.percentage||0)>=90?"#059669":"#dc2626"},
+      {l:"Previous",v:`${info.previous_score}/${info.total_score}`,c:"#111827"},
+      {l:"Difference",v:info.difference||"—",c:String(info.difference).startsWith("-")?"#dc2626":"#059669"},
+    ];
+
+    const scoresCells = scores.map(s =>
+      `<td style="width:25%;text-align:center;padding:14px 8px;background:#f9fafb;border:1px solid #e5e7eb;">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:6px;font-family:monospace;">${s.l}</div>
+        <div style="font-size:20px;font-weight:bold;color:${s.c};">${s.v}</div>
+      </td>`
+    ).join("");
+
+    let ncRows = "";
+    let appxN = 0;
+    ncs.forEach((nc, i) => {
+      const hasEv = (croppedImages[i]?.length > 0) || nc.auditor_comments;
+      if (hasEv) appxN++;
+      const bg = i % 2 === 0 ? "#ffffff" : "#f9fafb";
+      ncRows += `<tr style="background:${bg};">
+        <td style="padding:8px 10px;border:1px solid #e5e7eb;font-weight:bold;color:#dc2626;font-size:12px;font-family:monospace;">${nc.id}</td>
+        <td style="padding:8px 10px;border:1px solid #e5e7eb;font-weight:600;font-size:12px;">${nc.section}</td>
+        <td style="padding:8px 10px;border:1px solid #e5e7eb;font-size:12px;color:#374151;">${nc.question}</td>
+        <td style="padding:8px 10px;border:1px solid #e5e7eb;font-size:12px;color:${nc.auditor_comments ? "#78350f" : "#999"};${nc.auditor_comments ? "background:#fffdf7;" : "font-style:italic;"}">${nc.auditor_comments || "No comments"}</td>
+        <td style="padding:8px 10px;border:1px solid #e5e7eb;text-align:center;font-weight:bold;color:#dc2626;font-size:13px;font-family:monospace;">-${nc.points_lost}</td>
+        <td style="padding:8px 10px;border:1px solid #e5e7eb;text-align:center;font-size:11px;">${hasEv ? `Appx ${appxN}` : "—"}</td>
+      </tr>`;
+    });
+
+    const totalRow = `<tr style="background:#fef2f2;">
+      <td colspan="4" style="padding:8px 10px;border:1px solid #e5e7eb;font-weight:bold;text-align:right;color:#991b1b;font-size:13px;">Total Points Lost</td>
+      <td style="padding:8px 10px;border:1px solid #e5e7eb;text-align:center;font-weight:bold;color:#dc2626;font-size:15px;font-family:monospace;">-${totalLost}</td>
+      <td style="padding:8px 10px;border:1px solid #e5e7eb;"></td>
+    </tr>`;
+
+    // Appendix
+    let appxHtml = "";
+    let appxC = 0;
+    appendixItems.forEach(({ nc, idx }) => {
+      appxC++;
+      const cmtHtml = nc.auditor_comments ? `<div style="background:#fffbeb;border:1px solid #fde68a;padding:10px 14px;margin:8px 0;">
+        <div style="font-size:11px;font-weight:bold;color:#b45309;margin-bottom:4px;">Auditor Comment</div>
+        <div style="font-size:13px;color:#78350f;">${nc.auditor_comments}</div>
+      </div>` : "";
+      appxHtml += `<div style="border:1px solid #e5e7eb;padding:14px;margin:12px 0;">
+        <div style="margin-bottom:8px;"><span style="background:#fef2f2;color:#e11d48;font-size:10px;font-weight:bold;padding:2px 8px;">${"Appendix " + appxC}</span>
+        <strong style="color:#e11d48;margin-left:8px;">${nc.id}</strong>
+        <span style="margin-left:8px;font-weight:600;">${nc.section}</span></div>
+        <div style="font-size:13px;color:#4b5563;">${nc.question}</div>
+        ${cmtHtml}
+      </div>`;
+    });
+
+    const emailHtml = `<div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;max-width:700px;">
+      <p style="font-size:15px;color:#374151;">Dear Team,</p>
+      <p style="font-size:14px;color:#4b5563;line-height:1.6;">Please find below the non-compliance findings from the audit at <strong>${info.store_name || "the store"}</strong>${info.reference_id ? ` (${info.reference_id})` : ""}${info.visit_date ? ` on ${info.visit_date}` : ""}. A total of <strong style="color:#dc2626;">${ncs.length} item${ncs.length !== 1 ? "s" : ""}</strong> failed with <strong style="color:#b45309;">${totalLost} points lost</strong>.</p>
+
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:16px 0 24px;"><tr>${scoresCells}</tr></table>
+
+      <div style="text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:2px;color:#e11d48;font-weight:bold;margin:20px 0 12px;">Non-Compliance Summary</div>
+
+      ${ncs.length === 0 ? `<p style="text-align:center;color:#059669;font-weight:bold;">All Clear — No non-compliance items found.</p>` : `
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+        <thead><tr style="background:#f8fafc;">
+          <th style="padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Ref</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Section</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Question</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Comments</th>
+          <th style="padding:8px 10px;text-align:center;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Lost</th>
+          <th style="padding:8px 10px;text-align:center;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Evidence</th>
+        </tr></thead>
+        <tbody>${ncRows}${totalRow}</tbody>
+      </table>`}
+
+      ${appendixItems.length > 0 ? `<div style="margin-top:24px;"><div style="font-size:14px;font-weight:bold;color:#1f2937;margin-bottom:12px;">Appendix — Evidence & Comments</div>${appxHtml}</div>` : ""}
+
+      <div style="border-top:2px solid #e5e7eb;margin-top:24px;padding-top:16px;">
+        <p style="font-size:14px;color:#4b5563;line-height:1.6;">Please address the above findings and implement corrective actions before the next audit. Respond with your action plan within <strong>5 working days</strong>.</p>
+        <p style="font-size:14px;color:#4b5563;margin-top:12px;">Best regards,<br/><strong>Compliance & Loss Prevention Team</strong></p>
+      </div>
+    </div>`;
+
+    // Copy to clipboard as rich HTML
+    try {
+      const blob = new Blob([emailHtml], { type: "text/html" });
+      const textBlob = new Blob([document.getElementById("email-report-body")?.innerText || ""], { type: "text/plain" });
+      await navigator.clipboard.write([
+        new ClipboardItem({ "text/html": blob, "text/plain": textBlob }),
+      ]);
+    } catch (e) {
+      // Fallback
+      const tmp = document.createElement("div");
+      tmp.innerHTML = emailHtml;
+      tmp.style.position = "fixed";
+      tmp.style.left = "-9999px";
+      document.body.appendChild(tmp);
+      const range = document.createRange();
+      range.selectNodeContents(tmp);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand("copy");
+      sel.removeAllRanges();
+      document.body.removeChild(tmp);
+    }
+
+    setEmailReady(true);
+    setTimeout(() => setEmailReady(false), 6000);
+
+    // Open default email client
+    const subject = `Non-Compliance Report - ${info.store_name || "Store"}${info.reference_id ? ` (${info.reference_id})` : ""}${info.visit_date ? ` - ${info.visit_date}` : ""}`;
+    setTimeout(() => {
+      window.open(`mailto:?subject=${encodeURIComponent(subject)}`, "_self");
+    }, 300);
+  };
+
   return (
     <div style={S.root}><style>{CSS}</style>
+      {/* Floating toast */}
+      {emailReady && (
+        <div style={{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",zIndex:9999,background:"#059669",color:"#fff",padding:"12px 24px",borderRadius:10,fontSize:".88rem",fontWeight:600,boxShadow:"0 8px 32px rgba(0,0,0,.2)",display:"flex",alignItems:"center",gap:8,animation:"fadeUp .3s ease both"}}>
+          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#fff" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>
+          Report copied! Paste in your email body (Cmd+V)
+        </div>
+      )}
       <div style={S.outer}>
-        <div style={S.bar}><button onClick={reset} style={S.backBtn}><svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" d="M15 19l-7-7 7-7"/></svg> New Report</button></div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",marginBottom:8}}>
+          <button onClick={reset} style={S.backBtn}><svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" d="M15 19l-7-7 7-7"/></svg> New Report</button>
+          <button onClick={sendEmail} style={{...S.primary,display:"flex",alignItems:"center",gap:8,fontSize:".82rem",padding:"9px 18px",background:emailReady?"#059669":"linear-gradient(135deg,#e11d48,#be123c)"}}>
+            {emailReady ? (
+              <><svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="#fff" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg> Copied! Paste in email body (Cmd+V)</>
+            ) : (
+              <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 4L12 13 2 4"/></svg> Send Email</>
+            )}
+          </button>
+        </div>
 
         <div style={S.email}>
-          <div style={S.eBody}>
+          <div id="email-report-body" style={S.eBody}>
             <p style={S.greet}>Dear Team,</p>
             <p style={S.bTxt}>Please find below the non-compliance findings from the audit at <strong>{info.store_name || "the store"}</strong>{info.reference_id ? ` (${info.reference_id})` : ""}{info.visit_date ? ` on ${info.visit_date}` : ""}. A total of <strong style={{color:"#dc2626"}}>{ncs.length} item{ncs.length!==1?"s":""}</strong> failed with <strong style={{color:"#b45309"}}>{totalLost} points lost</strong>.{appendixItems.length > 0 ? " Evidence photos are in the appendix." : ""}</p>
 
