@@ -31,27 +31,6 @@ const getPageTextItems = async (page) => {
 };
 
 /* ─── Render page to canvas for image cropping ─── */
-const renderPageCanvas = async (page, scale = 2.5) => {
-  const vp = page.getViewport({ scale });
-  const canvas = document.createElement("canvas");
-  canvas.width = vp.width;
-  canvas.height = vp.height;
-  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
-  return canvas;
-};
-
-/* ─── Crop a region of a canvas ─── */
-const cropCanvas = (canvas, topPct, bottomPct) => {
-  const h = canvas.height, w = canvas.width;
-  const sy = Math.max(0, Math.round(h * topPct));
-  const sh = Math.min(h - sy, Math.round(h * (bottomPct - topPct)));
-  if (sh <= 10) return null;
-  const c2 = document.createElement("canvas");
-  c2.width = w; c2.height = sh;
-  c2.getContext("2d").drawImage(canvas, 0, sy, w, sh, 0, 0, w, sh);
-  return c2.toDataURL("image/jpeg", 0.88);
-};
-
 /* ─── Main parser: extract all structured data from PDF text ─── */
 const parseAuditReport = (allPagesText) => {
   // Build lines grouped by Y position per page
@@ -300,36 +279,6 @@ const parseAuditReport = (allPagesText) => {
   return { info, nonCompliances };
 };
 
-/* ─── Find where images likely are on a page for a given question ─── */
-const findImageRegion = (pageItems, questionY, pageHeight) => {
-  // Images in audit PDFs are usually right after the question/answer
-  // Look for gaps in text (image regions have no text)
-  const sortedByY = [...pageItems].sort((a, b) => a.y - b.y);
-  const normalizedQ = questionY / pageHeight;
-
-  // Find text gap after the question area
-  let gapStart = -1, gapEnd = -1, maxGap = 0;
-  for (let i = 0; i < sortedByY.length - 1; i++) {
-    const gap = sortedByY[i + 1].y - sortedByY[i].y;
-    const normalizedPos = sortedByY[i].y / pageHeight;
-    // Only consider gaps after the question and > 50px (potential image)
-    if (gap > 50 && normalizedPos >= normalizedQ - 0.1) {
-      if (gap > maxGap) {
-        maxGap = gap;
-        gapStart = sortedByY[i].y;
-        gapEnd = sortedByY[i + 1].y;
-      }
-    }
-  }
-
-  if (maxGap > 50) {
-    const topPct = Math.max(0, (gapStart - 10) / pageHeight);
-    const bottomPct = Math.min(1, (gapEnd + 10) / pageHeight);
-    return { topPct, bottomPct };
-  }
-  return null;
-};
-
 
 export default function ComplianceReport() {
   const [file, setFile] = useState(null);
@@ -337,7 +286,6 @@ export default function ComplianceReport() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [data, setData] = useState(null);
-  const [croppedImages, setCroppedImages] = useState({});
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [emailReady, setEmailReady] = useState(false);
@@ -353,7 +301,7 @@ export default function ComplianceReport() {
 
   const analyze = async () => {
     if (!file) return;
-    setLoading(true); setError(""); setData(null); setCroppedImages({});
+    setLoading(true); setError(""); setData(null);
     try {
       setProgress("Loading PDF engine...");
       const pdfjsLib = await loadPdfJs();
@@ -364,43 +312,17 @@ export default function ComplianceReport() {
 
       // Extract text from all pages
       const allPagesText = [];
-      const canvases = {};
-      const pageHeights = {};
 
       for (let i = 1; i <= totalPages; i++) {
         setProgress(`Reading page ${i}/${totalPages}...`);
         const page = await pdf.getPage(i);
         const items = await getPageTextItems(page);
         allPagesText.push(items);
-        pageHeights[i - 1] = page.getViewport({ scale: 1 }).height;
       }
 
       setProgress("Parsing audit data...");
       const { info, nonCompliances } = parseAuditReport(allPagesText);
 
-      // Render pages that have NC items for image cropping
-      setProgress("Extracting evidence images...");
-      const ncPages = [...new Set(nonCompliances.map(nc => nc.page))];
-      for (const pg of ncPages) {
-        const page = await pdf.getPage(pg + 1);
-        canvases[pg] = await renderPageCanvas(page);
-      }
-
-      // Crop images for each NC
-      const cropped = {};
-      nonCompliances.forEach((nc, i) => {
-        if (canvases[nc.page]) {
-          const region = findImageRegion(allPagesText[nc.page], nc.y_position, pageHeights[nc.page]);
-          if (region) {
-            const url = cropCanvas(canvases[nc.page], region.topPct, region.bottomPct);
-            if (url) {
-              cropped[i] = [{ url, page: nc.page + 1 }];
-            }
-          }
-        }
-      });
-
-      setCroppedImages(cropped);
       setData({ info, nonCompliances });
     } catch (err) {
       console.error(err);
@@ -408,7 +330,7 @@ export default function ComplianceReport() {
     } finally { setLoading(false); setProgress(""); }
   };
 
-  const reset = () => { setFile(null); setFileName(""); setData(null); setError(""); setCroppedImages({}); if (inputRef.current) inputRef.current.value = ""; };
+  const reset = () => { setFile(null); setFileName(""); setData(null); setError(""); if (inputRef.current) inputRef.current.value = ""; };
 
   // ── UPLOAD ──
   if (!data) {
@@ -420,7 +342,7 @@ export default function ComplianceReport() {
             <span style={S.logoText}>Compliance Audit</span>
           </div>
           <h1 style={S.h1}>Non-Compliance<br/>Email Report</h1>
-          <p style={S.sub}>Upload your audit PDF — parses directly to extract non-compliances, auditor comments, and evidence images.</p>
+          <p style={S.sub}>Upload your audit PDF — parses directly to extract non-compliances and auditor comments.</p>
           <div onDragOver={e=>{e.preventDefault();setDragOver(true)}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop} onClick={()=>!loading&&inputRef.current?.click()}
             style={{...S.drop,borderColor:dragOver?"#e11d48":file?"#34d399":"#d1d5db",background:dragOver?"rgba(225,29,72,.03)":file?"rgba(52,211,153,.03)":"#fafafa",cursor:loading?"wait":"pointer"}}>
             <input ref={inputRef} type="file" accept=".pdf" style={{display:"none"}} onChange={e=>handleFile(e.target.files?.[0])}/>
@@ -455,8 +377,6 @@ export default function ComplianceReport() {
   // ── EMAIL REPORT ──
   const { info, nonCompliances: ncs } = data;
   const totalLost = ncs.reduce((s,n) => s + (n.points_lost||0), 0);
-  const appendixItems = ncs.map((nc,i) => ({nc,idx:i})).filter(({nc,idx}) => (croppedImages[idx]?.length > 0) || nc.auditor_comments);
-  let appxCounter = 0;
 
   // ── SEND EMAIL ──
   const sendEmail = async () => {
@@ -476,10 +396,7 @@ export default function ComplianceReport() {
     ).join("");
 
     let ncRows = "";
-    let appxN = 0;
     ncs.forEach((nc, i) => {
-      const hasEv = (croppedImages[i]?.length > 0) || nc.auditor_comments;
-      if (hasEv) appxN++;
       const bg = i % 2 === 0 ? "#ffffff" : "#f9fafb";
       ncRows += `<tr style="background:${bg};">
         <td style="padding:8px 10px;border:1px solid #e5e7eb;font-weight:bold;color:#dc2626;font-size:12px;font-family:monospace;">${nc.id}</td>
@@ -487,33 +404,13 @@ export default function ComplianceReport() {
         <td style="padding:8px 10px;border:1px solid #e5e7eb;font-size:12px;color:#374151;">${nc.question}</td>
         <td style="padding:8px 10px;border:1px solid #e5e7eb;font-size:12px;color:${nc.auditor_comments ? "#78350f" : "#999"};${nc.auditor_comments ? "background:#fffdf7;" : "font-style:italic;"}">${nc.auditor_comments || "No comments"}</td>
         <td style="padding:8px 10px;border:1px solid #e5e7eb;text-align:center;font-weight:bold;color:#dc2626;font-size:13px;font-family:monospace;">-${nc.points_lost}</td>
-        <td style="padding:8px 10px;border:1px solid #e5e7eb;text-align:center;font-size:11px;">${hasEv ? `Appx ${appxN}` : "—"}</td>
       </tr>`;
     });
 
     const totalRow = `<tr style="background:#fef2f2;">
       <td colspan="4" style="padding:8px 10px;border:1px solid #e5e7eb;font-weight:bold;text-align:right;color:#991b1b;font-size:13px;">Total Points Lost</td>
       <td style="padding:8px 10px;border:1px solid #e5e7eb;text-align:center;font-weight:bold;color:#dc2626;font-size:15px;font-family:monospace;">-${totalLost}</td>
-      <td style="padding:8px 10px;border:1px solid #e5e7eb;"></td>
     </tr>`;
-
-    // Appendix
-    let appxHtml = "";
-    let appxC = 0;
-    appendixItems.forEach(({ nc, idx }) => {
-      appxC++;
-      const cmtHtml = nc.auditor_comments ? `<div style="background:#fffbeb;border:1px solid #fde68a;padding:10px 14px;margin:8px 0;">
-        <div style="font-size:11px;font-weight:bold;color:#b45309;margin-bottom:4px;">Auditor Comment</div>
-        <div style="font-size:13px;color:#78350f;">${nc.auditor_comments}</div>
-      </div>` : "";
-      appxHtml += `<div style="border:1px solid #e5e7eb;padding:14px;margin:12px 0;">
-        <div style="margin-bottom:8px;"><span style="background:#fef2f2;color:#e11d48;font-size:10px;font-weight:bold;padding:2px 8px;">${"Appendix " + appxC}</span>
-        <strong style="color:#e11d48;margin-left:8px;">${nc.id}</strong>
-        <span style="margin-left:8px;font-weight:600;">${nc.section}</span></div>
-        <div style="font-size:13px;color:#4b5563;">${nc.question}</div>
-        ${cmtHtml}
-      </div>`;
-    });
 
     const emailHtml = `<div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;max-width:700px;">
       <p style="font-size:15px;color:#374151;">Dear Team,</p>
@@ -531,12 +428,9 @@ export default function ComplianceReport() {
           <th style="padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Question</th>
           <th style="padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Comments</th>
           <th style="padding:8px 10px;text-align:center;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Lost</th>
-          <th style="padding:8px 10px;text-align:center;font-size:11px;text-transform:uppercase;color:#6b7280;border:1px solid #e5e7eb;">Evidence</th>
         </tr></thead>
         <tbody>${ncRows}${totalRow}</tbody>
       </table>`}
-
-      ${appendixItems.length > 0 ? `<div style="margin-top:24px;"><div style="font-size:14px;font-weight:bold;color:#1f2937;margin-bottom:12px;">Appendix — Evidence & Comments</div>${appxHtml}</div>` : ""}
 
       <div style="border-top:2px solid #e5e7eb;margin-top:24px;padding-top:16px;">
         <p style="font-size:14px;color:#4b5563;line-height:1.6;">Please address the above findings and implement corrective actions before the next audit. Respond with your action plan within <strong>5 working days</strong>.</p>
@@ -602,7 +496,7 @@ export default function ComplianceReport() {
         <div style={S.email}>
           <div id="email-report-body" style={S.eBody}>
             <p style={S.greet}>Dear Team,</p>
-            <p style={S.bTxt}>Please find below the non-compliance findings from the audit at <strong>{info.store_name || "the store"}</strong>{info.reference_id ? ` (${info.reference_id})` : ""}{info.visit_date ? ` on ${info.visit_date}` : ""}. A total of <strong style={{color:"#dc2626"}}>{ncs.length} item{ncs.length!==1?"s":""}</strong> failed with <strong style={{color:"#b45309"}}>{totalLost} points lost</strong>.{appendixItems.length > 0 ? " Evidence photos are in the appendix." : ""}</p>
+            <p style={S.bTxt}>Please find below the non-compliance findings from the audit at <strong>{info.store_name || "the store"}</strong>{info.reference_id ? ` (${info.reference_id})` : ""}{info.visit_date ? ` on ${info.visit_date}` : ""}. A total of <strong style={{color:"#dc2626"}}>{ncs.length} item{ncs.length!==1?"s":""}</strong> failed with <strong style={{color:"#b45309"}}>{totalLost} points lost</strong>.</p>
 
             {/* Scores */}
             <div style={S.sGrid}>
@@ -626,15 +520,12 @@ export default function ComplianceReport() {
               <div style={{overflowX:"auto",marginBottom:32}}>
                 <table style={S.table}>
                   <thead><tr>
-                    {["Ref","Section","Question","Comments","Lost","Evidence"].map((h,i)=>(
-                      <th key={i} style={{...S.th,textAlign:i>=4?"center":"left",width:i===0?"48px":i===4?"52px":i===5?"70px":i===3?"25%":"auto"}}>{h}</th>
+                    {["Ref","Section","Question","Comments","Lost"].map((h,i)=>(
+                      <th key={i} style={{...S.th,textAlign:i>=4?"center":"left",width:i===0?"48px":i===4?"52px":i===3?"25%":"auto"}}>{h}</th>
                     ))}
                   </tr></thead>
                   <tbody>
                     {ncs.map((nc,i)=>{
-                      const hasEvidence = (croppedImages[i]?.length > 0) || nc.auditor_comments;
-                      if (hasEvidence) appxCounter++;
-                      const appxNum = hasEvidence ? appxCounter : null;
                       return (
                         <tr key={i} style={{background:i%2===0?"#fff":"#fafbfc"}}>
                           <td style={{...S.td,fontWeight:700,color:"#dc2626",fontFamily:"'JetBrains Mono',monospace",fontSize:".74rem"}}>{nc.id}</td>
@@ -644,69 +535,16 @@ export default function ComplianceReport() {
                             {nc.auditor_comments || "No comments"}
                           </td>
                           <td style={{...S.td,textAlign:"center",fontWeight:700,color:"#dc2626",fontFamily:"'JetBrains Mono',monospace",fontSize:".82rem"}}>−{nc.points_lost}</td>
-                          <td style={{...S.td,textAlign:"center"}}>
-                            {hasEvidence ? (
-                              <span style={{fontSize:".62rem",fontWeight:600,color:"#059669",background:"#ecfdf5",border:"1px solid #a7f3d0",padding:"3px 8px",borderRadius:4}}>Appx {appxNum}</span>
-                            ) : (
-                              <span style={{fontSize:".62rem",color:"#9ca3af"}}>—</span>
-                            )}
-                          </td>
                         </tr>
                       );
                     })}
                     <tr style={{background:"#fef2f2"}}>
                       <td colSpan={4} style={{...S.td,fontWeight:700,textAlign:"right",color:"#991b1b",fontSize:".82rem"}}>Total Points Lost</td>
                       <td style={{...S.td,textAlign:"center",fontWeight:700,color:"#dc2626",fontSize:"1rem",fontFamily:"'JetBrains Mono',monospace"}}>−{totalLost}</td>
-                      <td style={S.td}></td>
                     </tr>
                   </tbody>
                 </table>
               </div>
-            )}
-
-            {/* APPENDIX */}
-            {appendixItems.length > 0 && (
-              <>
-                <div style={S.appxBar}>
-                  <div style={S.appxBarIcon}><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="#e11d48" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></div>
-                  <div><div style={S.appxBarTitle}>Appendix — Evidence & Comments</div><div style={S.appxBarSub}>Images extracted from the audit PDF</div></div>
-                </div>
-
-                {appendixItems.map(({nc,idx},k) => (
-                  <div key={k} style={{...S.aCard,animation:`fadeUp .4s ease both`,animationDelay:`${k*.08}s`}}>
-                    <div style={S.aHead}>
-                      <div style={S.aTag}>Appendix {k+1}</div>
-                      <div style={S.aNum}>{nc.id}</div>
-                      <div style={{flex:1}}>
-                        <div style={S.aSec}>{nc.section}</div>
-                        <div style={S.aQ}>{nc.question}</div>
-                      </div>
-                    </div>
-                    {nc.auditor_comments && (
-                      <div style={S.aCmt}>
-                        <div style={S.aCmtH}>
-                          <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="#b45309" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
-                          Auditor Comment
-                        </div>
-                        <div style={S.aCmtT}>{nc.auditor_comments}</div>
-                      </div>
-                    )}
-                    {croppedImages[idx]?.length > 0 && (
-                      <div style={S.aImgs}>
-                        {croppedImages[idx].map((img,j) => (
-                          <div key={j} style={S.aImgW}>
-                            <img src={img.url} alt={`Evidence for ${nc.id}`} style={S.aImg}/>
-                            <div style={S.aImgCap}>
-                              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="#3b82f6" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-                              Evidence — Page {img.page}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </>
             )}
 
             {/* Closing */}
@@ -768,27 +606,6 @@ const S={
   table:{width:"100%",borderCollapse:"collapse",border:"1px solid #e5e7eb",fontSize:".84rem"},
   th:{fontFamily:"'JetBrains Mono',monospace",fontSize:".58rem",fontWeight:700,letterSpacing:".06em",textTransform:"uppercase",color:"#6b7280",background:"#f3f4f6",padding:"10px 12px",borderBottom:"2px solid #e5e7eb"},
   td:{padding:"10px 12px",borderBottom:"1px solid #f0f0f3",color:"#374151",verticalAlign:"top"},
-
-  appxBar:{display:"flex",alignItems:"center",gap:14,background:"linear-gradient(135deg,#fef2f2,#fff5f5)",border:"1px solid #fecaca",borderRadius:12,padding:"18px 20px",marginBottom:16},
-  appxBarIcon:{width:36,height:36,borderRadius:9,background:"#fee2e2",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0},
-  appxBarTitle:{fontSize:"1rem",fontWeight:700,color:"#991b1b"},
-  appxBarSub:{fontSize:".76rem",color:"#b91c1c",marginTop:2},
-
-  aCard:{border:"1px solid #e5e7eb",borderRadius:12,marginBottom:18,overflow:"hidden"},
-  aHead:{display:"flex",alignItems:"flex-start",gap:10,padding:"16px 20px",background:"#f9fafb",borderBottom:"1px solid #e5e7eb",flexWrap:"wrap"},
-  aTag:{fontFamily:"'JetBrains Mono',monospace",fontSize:".58rem",fontWeight:700,color:"#fff",background:"#e11d48",padding:"3px 8px",borderRadius:5,letterSpacing:".06em",alignSelf:"center"},
-  aNum:{fontFamily:"'JetBrains Mono',monospace",fontSize:".78rem",fontWeight:700,color:"#dc2626",background:"#fee2e2",padding:"4px 12px",borderRadius:8,alignSelf:"center"},
-  aSec:{fontSize:".88rem",fontWeight:600,color:"#374151"},
-  aQ:{fontSize:".8rem",color:"#6b7280",lineHeight:1.5,marginTop:3},
-
-  aCmt:{margin:"14px 20px 0",padding:"14px 16px",background:"#fffbeb",border:"1px solid #fde68a",borderRadius:10},
-  aCmtH:{display:"flex",alignItems:"center",gap:6,fontFamily:"'JetBrains Mono',monospace",fontSize:".6rem",fontWeight:700,letterSpacing:".08em",color:"#b45309",textTransform:"uppercase",marginBottom:8},
-  aCmtT:{fontSize:".84rem",lineHeight:1.6,color:"#78350f",whiteSpace:"pre-wrap"},
-
-  aImgs:{padding:"16px 20px"},
-  aImgW:{borderRadius:10,overflow:"hidden",border:"1px solid #bfdbfe",marginBottom:12,background:"#fff"},
-  aImg:{width:"100%",display:"block",maxHeight:500,objectFit:"contain",background:"#f8fafc"},
-  aImgCap:{display:"flex",alignItems:"center",gap:6,padding:"10px 14px",background:"#f0f7ff",borderTop:"1px solid #dbeafe",fontFamily:"'JetBrains Mono',monospace",fontSize:".65rem",fontWeight:500,color:"#1d4ed8",flexWrap:"wrap"},
 
   foot:{marginTop:24,paddingTop:14,borderTop:"1px solid #e5e7eb",fontSize:".63rem",color:"#9ca3af",textAlign:"center",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.7},
 };
