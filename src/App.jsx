@@ -73,38 +73,87 @@ const parseAuditReport = (allPagesText) => {
   info.visit_date = grab([/Current\s*Visit\s*Date\s*[:\-]?\s*([\d\-\/]+)/i]);
   info.last_visit_date = grab([/Last\s*Visit\s*Date\s*[:\-]?\s*([\d\-\/]+)/i]);
 
-  // ─── Parse Summary Table (positional) ───
-  // Find line with "Previous Total Score" header, then grab values from next line
-  for (let i = 0; i < allLines.length - 1; i++) {
-    const lt = allLines[i].text;
-    if (lt.includes("Previous Total Score") && lt.includes("Current Score")) {
-      // Next line has the values in same order
-      const valLine = allLines[i + 1].text;
-      const nums = valLine.match(/[\d.]+/g);
-      if (nums && nums.length >= 4) {
-        info.total_score = parseFloat(nums[2]) || parseFloat(nums[0]); // Current Total Score
-        info.current_score = parseFloat(nums[3]) || 0;  // Current Score
-        info.previous_score = parseFloat(nums[1]) || 0; // Previous Score
-        // % ACH
-        const pctM = valLine.match(/([\d.]+)%/);
-        if (pctM) info.percentage = parseFloat(pctM[1]);
+  // ─── Parse Summary Table ───
+  // Strategy: Find "Summary" heading, then between it and "Section Summary",
+  // look for the value line that contains a percentage (the scores line)
+  let summaryIdx = -1, sectionSummaryIdx = -1;
+  for (let i = 0; i < allLines.length; i++) {
+    const lt = allLines[i].text.trim();
+    if (/^Summary$/i.test(lt) && summaryIdx === -1) summaryIdx = i;
+    if (/^Section\s*Summary$/i.test(lt)) { sectionSummaryIdx = i; break; }
+  }
+
+  if (summaryIdx >= 0) {
+    const endIdx = sectionSummaryIdx > summaryIdx ? sectionSummaryIdx : Math.min(summaryIdx + 15, allLines.length);
+    // Find value line with percentage (e.g. "193.0 189.0 95.45% -2.02% ↓")
+    for (let i = summaryIdx + 1; i < endIdx; i++) {
+      const lt = allLines[i].text;
+      const pctMatch = lt.match(/([\d.]+)%/);
+      if (!pctMatch) continue;
+      // This line has the percentage — extract all numbers
+      const nums = lt.match(/[\d.]+/g);
+      if (nums && nums.length >= 2) {
+        // Format: "PrevScore CurrScore Pct% Diff% ↓"
+        info.previous_score = parseFloat(nums[0]) || 0;
+        info.current_score = parseFloat(nums[1]) || 0;
+        info.percentage = parseFloat(pctMatch[1]) || 0;
         // Difference
-        const diffM = valLine.match(/(-[\d.]+%)/);
+        const diffM = lt.match(/(-[\d.]+%)/);
         if (diffM) info.difference = diffM[1];
         else {
-          const diffM2 = valLine.match(/([\d.]+%)\s*↓/);
-          if (diffM2) info.difference = "-" + diffM2[1];
+          const diffM2 = lt.match(/([\d.]+)%\s*↓/);
+          if (diffM2 && parseFloat(diffM2[1]) !== info.percentage) info.difference = "-" + diffM2[1] + "%";
           else {
-            const diffM3 = valLine.match(/([\d.]+%)\s*↑/);
-            if (diffM3) info.difference = "+" + diffM3[1];
+            const diffM3 = lt.match(/([\d.]+)%\s*↑/);
+            if (diffM3 && parseFloat(diffM3[1]) !== info.percentage) info.difference = "+" + diffM3[1] + "%";
           }
         }
+        // Now find the totals line nearby (e.g. "198.0 198.0")
+        for (let j = summaryIdx + 1; j < endIdx; j++) {
+          if (j === i) continue;
+          const tl = allLines[j].text;
+          const tNums = tl.match(/[\d.]+/g);
+          if (tNums && tNums.length >= 2 && !tl.includes("%")) {
+            // Two numbers without percentage = Previous Total, Current Total
+            info.total_score = parseFloat(tNums[1]) || parseFloat(tNums[0]) || 0;
+            break;
+          }
+        }
+        break;
       }
-      break;
     }
   }
 
-  // Fallback: try "Current Score" / "Current Total Score" patterns if table not found
+  // Strategy 2: Try "Previous Total Score" + "Current Score" on same header line (some PDFs)
+  if (info.current_score === 0) {
+    for (let i = 0; i < allLines.length - 1; i++) {
+      const lt = allLines[i].text;
+      if (lt.includes("Previous Total Score") && lt.includes("Current Score")) {
+        const valLine = allLines[i + 1].text;
+        const nums = valLine.match(/[\d.]+/g);
+        if (nums && nums.length >= 4) {
+          info.total_score = parseFloat(nums[2]) || parseFloat(nums[0]);
+          info.current_score = parseFloat(nums[3]) || 0;
+          info.previous_score = parseFloat(nums[1]) || 0;
+          const pctM = valLine.match(/([\d.]+)%/);
+          if (pctM) info.percentage = parseFloat(pctM[1]);
+          const diffM = valLine.match(/(-[\d.]+%)/);
+          if (diffM) info.difference = diffM[1];
+          else {
+            const diffM2 = valLine.match(/([\d.]+%)\s*↓/);
+            if (diffM2) info.difference = "-" + diffM2[1];
+            else {
+              const diffM3 = valLine.match(/([\d.]+%)\s*↑/);
+              if (diffM3) info.difference = "+" + diffM3[1];
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Strategy 3: Inline "Current Score : 189.0"
   if (info.current_score === 0) {
     const csm = ft.match(/Current\s+Score\s*[:\-]\s*([\d.]+)/i);
     const tsm = ft.match(/Current\s+Total\s+Score\s*[:\-]\s*([\d.]+)/i);
@@ -116,6 +165,11 @@ const parseAuditReport = (allPagesText) => {
     if (psm) info.previous_score = parseFloat(psm[1]);
     if (pcm) info.percentage = parseFloat(pcm[1]);
     if (dfm) info.difference = dfm[1];
+  }
+
+  // Calculate percentage if missing
+  if (info.percentage === 0 && info.total_score > 0 && info.current_score > 0) {
+    info.percentage = Math.round((info.current_score / info.total_score) * 10000) / 100;
   }
 
   // ─── Build section map ───
