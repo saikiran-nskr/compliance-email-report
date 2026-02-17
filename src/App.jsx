@@ -64,13 +64,13 @@ const parseAuditReport = (allPagesText) => {
     return "";
   };
 
-  info.store_name = grab([/Store\s*Name\s+(.+?)(?:\s+Reference|\n)/i]);
-  info.reference_id = grab([/Reference\s*ID\s*[:\-]?\s*([A-Z0-9\-]+)/i]);
+  info.store_name = grab([/Store\s*Name\s+(.+?)(?:\s+Reference|\n)/i, /Report\s*On\s+(.+?)(?:\n|$)/i]);
+  info.reference_id = grab([/Reference\s*ID\s*[:\-]?\s*([A-Z0-9\-]+)/i, /Reference\s+([A-Z0-9\-]+)/i]);
   info.store_manager = grab([/Store\s*Manager\s*[:\-]?\s*(.+?)(?:\n|Submitted|Area)/i]);
-  info.submitted_by = grab([/Submitted\s*By\s*[:\-]?\s*(.+?)(?:\n|Area|Reviewed)/i]);
+  info.submitted_by = grab([/Submitted\s*By\s*[:\-]?\s*(.+?)(?:\n|Area|Reviewed)/i, /Filled\s*By\s+(.+?)(?:\s*\(|\n)/i]);
   info.area_manager = grab([/Area\s*Manager\s*[:\-]?\s*(.+?)(?:\n|Reviewed|Regional)/i]);
-  info.reviewed_by = grab([/Reviewed\s*By\s*[:\-]?\s*(.+?)(?:\n|Regional|Current)/i]);
-  info.visit_date = grab([/Current\s*Visit\s*Date\s*[:\-]?\s*([\d\-\/]+)/i]);
+  info.reviewed_by = grab([/Reviewed\s*By\s*[:\-]?\s*(.+?)(?:\n|Regional|Current)/i, /Report\s*By\s+(.+?)(?:\n|$)/i]);
+  info.visit_date = grab([/Current\s*Visit\s*Date\s*[:\-]?\s*([\d\-\/]+)/i, /Report\s*Date\s+([\d]+\s+\w+\s+\d{4})/i]);
   info.last_visit_date = grab([/Last\s*Visit\s*Date\s*[:\-]?\s*([\d\-\/]+)/i]);
 
   // ─── Parse Summary Table ───
@@ -165,6 +165,36 @@ const parseAuditReport = (allPagesText) => {
     if (psm) info.previous_score = parseFloat(psm[1]);
     if (pcm) info.percentage = parseFloat(pcm[1]);
     if (dfm) info.difference = dfm[1];
+  }
+
+  // Strategy 4: "Points available" / "Percentage" format (Diamond Checklist etc.)
+  if (info.current_score === 0) {
+    for (let i = 0; i < allLines.length; i++) {
+      const lt = allLines[i].text;
+      // "Points available" followed by number on same or next line
+      if (/Points\s*available/i.test(lt)) {
+        const numM = lt.match(/Points\s*available\s*([\d.]+)/i);
+        if (numM) info.total_score = parseFloat(numM[1]);
+        else if (i + 1 < allLines.length) {
+          const n = allLines[i + 1].text.match(/^([\d.]+)$/);
+          if (n) info.total_score = parseFloat(n[1]);
+        }
+      }
+      // "Earned Score" near Points available (not section level which has "Earned Score: X")
+      if (/^Earned\s*Score\s+([\d.]+)$/i.test(lt)) {
+        const m = lt.match(/Earned\s*Score\s+([\d.]+)/i);
+        if (m) info.current_score = parseFloat(m[1]);
+      }
+      // "Percentage" + value
+      if (/Percentage/i.test(lt)) {
+        const pm = lt.match(/([\d.]+)\s*%/);
+        if (pm) info.percentage = parseFloat(pm[1]);
+        else if (i + 1 < allLines.length) {
+          const pm2 = allLines[i + 1].text.match(/([\d.]+)\s*%/);
+          if (pm2) info.percentage = parseFloat(pm2[1]);
+        }
+      }
+    }
   }
 
   // Calculate percentage if missing
@@ -299,6 +329,158 @@ const parseAuditReport = (allPagesText) => {
     const [bMaj, bMin] = b.id.split(".").map(Number);
     return aMaj - bMaj || aMin - bMin;
   });
+
+  // ─── PASS 2: Un-numbered questions (Diamond Checklist format) ───
+  // If first pass found nothing, scan for 0/X (X>0) patterns
+  if (nonCompliances.length === 0) {
+    // Build section map from "Maximum Score:" proximity
+    const sections = [];
+    for (let i = 0; i < allLines.length; i++) {
+      if (/Maximum\s*Score/i.test(allLines[i].text)) {
+        // Section name is within +1 to +6 lines AFTER Maximum Score
+        for (let j = i + 1; j < Math.min(allLines.length, i + 7); j++) {
+          const lt = allLines[j].text.trim();
+          // Section name: not a score/stat line, not a question, reasonably short
+          if (lt.length > 3 && lt.length < 80 &&
+              !/Maximum|Total\s*Score|Earned|Deducted|^\d|^Non$|Compliant|^0%|^\d+%/i.test(lt) &&
+              !/Process\s*Name|Overall\s*Report|Reference|Author|Filled|Report/i.test(lt) &&
+              !/^(Is |Are |How |Do |Does |Who |Please |If )/i.test(lt) &&
+              !/\d+\s*\/\s*\d+/.test(lt)) {
+            sections.push({ name: lt, lineIdx: i });
+            break;
+          }
+        }
+      }
+    }
+
+    // Find current section for a given line index
+    const getSectionForLine = (idx) => {
+      let best = "";
+      for (const s of sections) {
+        if (s.lineIdx <= idx) best = s.name;
+      }
+      return best;
+    };
+
+    // Scan for "0/X" where X > 0
+    let ncCount = 0;
+    for (let i = 0; i < allLines.length; i++) {
+      const lt = allLines[i].text;
+      const scoreM = lt.match(/\b0\s*\/\s*(\d+)/);
+      if (!scoreM) continue;
+      const maxPts = parseInt(scoreM[1]);
+      if (maxPts === 0) continue; // 0/0 is informational, skip
+
+      // Trace back to find question text
+      let questionParts = [];
+      let questionStartIdx = i;
+      const sectionNames = new Set(sections.map(s => s.name));
+
+      // Check if question is on the same line (before the score)
+      const beforeScore = lt.replace(/\b0\s*\/\s*\d+.*$/, "").trim();
+      // Remove answer words from end
+      const cleaned = beforeScore.replace(/\s+(Yes|No|NA|Occasionally|Fully\s+\w+|Most\s+of\s+the\s+Time|Daily|Bi-weekly|User-Friendly|Meeting\s+Expectations|Highly\s+Effective|Store\s+\S+(\s+\S+)?|Fully\s+Aligned)\s*$/i, "").trim();
+      
+      if (cleaned.length > 10) {
+        questionParts.push(cleaned);
+      }
+
+      // Look at previous lines for question continuation (backwards)
+      if (questionParts.length === 0 || cleaned.length < 30) {
+        for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
+          const prev = allLines[j].text.trim();
+          // Stop at section headers, score headers, other scores, section names
+          if (/Maximum\s*Score|Total\s*Score|Earned\s*Score|Deducted\s*Score/i.test(prev)) break;
+          if (/^\d+%$|^Non$|^Compliant$|^0%$/i.test(prev)) break;
+          if (/\b\d+\s*\/\s*\d+\b/.test(prev) && j < i - 1) break;
+          if (sectionNames.has(prev)) break;
+          if (/^(If |Comments:)/i.test(prev)) break;
+          if (/Comments:/i.test(prev)) break; // Comments anywhere in line
+          if (prev.includes("_%")) continue; // Skip sub-question prompts with _%
+          if (prev.length > 3 && prev.length < 200) {
+            questionParts.unshift(prev);
+            questionStartIdx = j;
+          }
+        }
+      }
+
+      // Also check lines after for question continuation
+      for (let j = i + 1; j < Math.min(i + 6, allLines.length); j++) {
+        const next = allLines[j].text.trim();
+        if (/^\d{1,2}\.\d|Maximum\s*Score|Total\s*Score|Earned\s*Score/i.test(next)) break;
+        if (/^Comments:/i.test(next)) break;
+        // Skip sub-question prompts ("If no, ...", "If yes, ...")
+        if (/^If\s+(no|yes)/i.test(next)) continue;
+        // Skip lines with their own scores (but not the one we found)
+        if (/\b\d+\s*\/\s*\d+\b/.test(next) && j > i) continue;
+        // Question continuation: short text, often ends with ? or is a wrap
+        if (next.length > 2 && next.length < 100 && !next.includes("_%")) {
+          // Check it looks like question text (starts lowercase or ends with ?)
+          if (next.endsWith("?") || /^[a-z]/.test(next)) {
+            questionParts.push(next);
+          }
+        }
+      }
+
+      // Clean up: deduplicate overlapping words at boundaries
+      let question = questionParts.join(" ").replace(/\s+/g, " ").trim();
+      // Remove duplicated word sequences at join boundaries
+      question = question.replace(/\b(\w+(?:\s+\w+)?)\s+\1\b/gi, "$1");
+      // Strip sub-prompts ("If yes, ...", "If no, ...") and everything after
+      question = question.replace(/\s*If\s+(yes|no),?\s+.*/i, "").trim();
+      // Strip inline answer content after ::
+      question = question.replace(/\s*::.*$/i, "").trim();
+      // Extract and strip any "Comments: ..." that leaked into question text
+      const commentInQ = question.match(/\s*Comments?:\s*(.+)/i);
+      if (commentInQ) {
+        question = question.replace(/\s*Comments?:\s*.+/i, "").trim();
+      }
+      if (!question || question.length < 5) continue;
+
+      // Extract comments nearby — scan further (up to 8 lines)
+      let comment = commentInQ ? commentInQ[1].trim() : "";
+      if (!comment) {
+        for (let j = i + 1; j < Math.min(i + 8, allLines.length); j++) {
+          const lt2 = allLines[j].text.trim();
+          // Inline comment pattern: "...:: Some answer text"
+          const inlineM = lt2.match(/::\s*(.+)/);
+          if (inlineM) {
+            comment = inlineM[1].trim();
+            // Check next line for continuation
+            if (j + 1 < allLines.length && !allLines[j+1].text.match(/^\d|Maximum|Total|Earned|^Comments|^Are |^Is |^Do |^How |^Who /i)) {
+              comment += " " + allLines[j+1].text.trim();
+            }
+            break;
+          }
+          if (/^Comments?:\s*(.+)/i.test(lt2)) {
+            comment = lt2.replace(/^Comments?:\s*/i, "").trim();
+            // Check next line for continuation
+            if (j + 1 < allLines.length && !allLines[j+1].text.match(/^\d|Maximum|Total|Earned|^Comments|^Are |^Is |^Do |^How |^Who /i)) {
+              comment += " " + allLines[j+1].text.trim();
+            }
+            break;
+          }
+          if (/Maximum\s*Score|Total\s*Score/i.test(lt2)) break;
+        }
+      }
+
+      ncCount++;
+      const section = getSectionForLine(i);
+      nonCompliances.push({
+        id: String(ncCount),
+        section,
+        question,
+        points_lost: maxPts,
+        max_points: maxPts,
+        section_obtained: 0,
+        section_total: 0,
+        section_percentage: 0,
+        auditor_comments: comment,
+        page: allLines[i].page,
+        y_position: allLines[i].y,
+      });
+    }
+  }
 
   // Try to get section scores from the section summary table
   for (const nc of nonCompliances) {
@@ -435,14 +617,18 @@ export default function ComplianceReport() {
   // ── SEND EMAIL ──
   const sendEmail = async () => {
     // Build email-compatible HTML using ONLY tables (no CSS grid/flexbox)
+    const hasPrev = info.previous_score > 0;
     const scores = [
       {l:"Current Score",v:`${info.percentage}%`,c:(info.percentage||0)>=90?"#059669":"#dc2626"},
-      {l:"Previous",v:`${info.total_score > 0 ? Math.round((info.previous_score/info.total_score)*10000)/100 : 0}%`,c:"#111827"},
-      {l:"Difference",v:info.difference||"—",c:String(info.difference).startsWith("-")?"#dc2626":"#059669"},
     ];
+    if (hasPrev) {
+      scores.push({l:"Previous",v:`${info.total_score > 0 ? Math.round((info.previous_score/info.total_score)*10000)/100 : 0}%`,c:"#111827"});
+      scores.push({l:"Difference",v:info.difference||"—",c:String(info.difference).startsWith("-")?"#dc2626":"#059669"});
+    }
 
+    const cellWidth = Math.floor(100 / scores.length);
     const scoresCells = scores.map(s =>
-      `<td style="width:33%;text-align:center;padding:14px 8px;background:#f9fafb;border:1px solid #e5e7eb;">
+      `<td style="width:${cellWidth}%;text-align:center;padding:14px 8px;background:#f9fafb;border:1px solid #e5e7eb;">
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:6px;font-family:monospace;">${s.l}</div>
         <div style="font-size:20px;font-weight:bold;color:${s.c};">${s.v}</div>
       </td>`
@@ -552,11 +738,13 @@ export default function ComplianceReport() {
             <p style={S.bTxt}>Please find below the non-compliance findings from the audit at <strong>{info.store_name || "the store"}</strong>{info.reference_id ? ` (${info.reference_id})` : ""}{info.visit_date ? ` on ${info.visit_date}` : ""}. A total of <strong style={{color:"#dc2626"}}>{ncs.length} item{ncs.length!==1?"s":""}</strong> failed with <strong style={{color:"#b45309"}}>{totalLost} points lost</strong>.</p>
 
             {/* Scores */}
-            <div style={S.sGrid}>
+            <div style={{...S.sGrid, gridTemplateColumns:`repeat(${info.previous_score > 0 ? 3 : 1},1fr)`}}>
               {[
                 {l:"Current Score",v:`${info.percentage}%`,c:(info.percentage||0)>=90?"#059669":"#dc2626"},
-                {l:"Previous",v:`${info.total_score > 0 ? Math.round((info.previous_score/info.total_score)*10000)/100 : 0}%`,c:"#111827"},
-                {l:"Difference",v:info.difference||"—",c:String(info.difference).startsWith("-")?"#dc2626":"#059669"},
+                ...(info.previous_score > 0 ? [
+                  {l:"Previous",v:`${info.total_score > 0 ? Math.round((info.previous_score/info.total_score)*10000)/100 : 0}%`,c:"#111827"},
+                  {l:"Difference",v:info.difference||"—",c:String(info.difference).startsWith("-")?"#dc2626":"#059669"},
+                ] : []),
               ].map((s,i)=><div key={i} style={S.sBox}><div style={S.sLbl}>{s.l}</div><div style={{...S.sVal,color:s.c||"#111"}}>{s.v}</div></div>)}
             </div>
 
