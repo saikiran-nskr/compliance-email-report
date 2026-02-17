@@ -74,81 +74,76 @@ const parseAuditReport = (allPagesText) => {
   info.last_visit_date = grab([/Last\s*Visit\s*Date\s*[:\-]?\s*([\d\-\/]+)/i]);
 
   // ─── Parse Summary Table ───
-  // Strategy: Find "Summary" heading, then between it and "Section Summary",
-  // look for the value line that contains a percentage (the scores line)
-  let summaryIdx = -1, sectionSummaryIdx = -1;
-  for (let i = 0; i < allLines.length; i++) {
-    const lt = allLines[i].text.trim();
-    if (/^Summary$/i.test(lt) && summaryIdx === -1) summaryIdx = i;
-    if (/^Section\s*Summary$/i.test(lt)) { sectionSummaryIdx = i; break; }
-  }
 
-  if (summaryIdx >= 0) {
-    const endIdx = sectionSummaryIdx > summaryIdx ? sectionSummaryIdx : Math.min(summaryIdx + 15, allLines.length);
-    // Find value line with percentage (e.g. "193.0 189.0 95.45% -2.02% ↓")
-    for (let i = summaryIdx + 1; i < endIdx; i++) {
-      const lt = allLines[i].text;
-      const pctMatch = lt.match(/([\d.]+)%/);
-      if (!pctMatch) continue;
-      // This line has the percentage — extract all numbers
-      const nums = lt.match(/[\d.]+/g);
-      if (nums && nums.length >= 2) {
-        // Format: "PrevScore CurrScore Pct% Diff% ↓"
-        info.previous_score = parseFloat(nums[0]) || 0;
-        info.current_score = parseFloat(nums[1]) || 0;
-        info.percentage = parseFloat(pctMatch[1]) || 0;
-        // Difference
-        const diffM = lt.match(/(-[\d.]+%)/);
+  // Strategy 1: "Previous Total Score" + "Current Score" on same header line (6-column format)
+  // Must run first — more specific than the generic Summary range scanner.
+  for (let i = 0; i < allLines.length - 1; i++) {
+    const lt = allLines[i].text;
+    if (lt.includes("Previous Total Score") && lt.includes("Current Score")) {
+      const valLine = allLines[i + 1].text;
+      const nums = valLine.match(/[\d.]+/g);
+      if (nums && nums.length >= 4) {
+        info.total_score = parseFloat(nums[2]) || parseFloat(nums[0]);
+        info.current_score = parseFloat(nums[3]) || 0;
+        info.previous_score = parseFloat(nums[1]) || 0;
+        const pctM = valLine.match(/([\d.]+)%/);
+        if (pctM) info.percentage = parseFloat(pctM[1]);
+        const diffM = valLine.match(/(-[\d.]+%)/);
         if (diffM) info.difference = diffM[1];
         else {
-          const diffM2 = lt.match(/([\d.]+)%\s*↓/);
-          if (diffM2 && parseFloat(diffM2[1]) !== info.percentage) info.difference = "-" + diffM2[1] + "%";
+          const diffM2 = valLine.match(/([\d.]+%)\s*↓/);
+          if (diffM2) info.difference = "-" + diffM2[1];
           else {
-            const diffM3 = lt.match(/([\d.]+)%\s*↑/);
-            if (diffM3 && parseFloat(diffM3[1]) !== info.percentage) info.difference = "+" + diffM3[1] + "%";
+            const diffM3 = valLine.match(/([\d.]+%)\s*↑/);
+            if (diffM3) info.difference = "+" + diffM3[1];
           }
         }
-        // Now find the totals line nearby (e.g. "198.0 198.0")
-        for (let j = summaryIdx + 1; j < endIdx; j++) {
-          if (j === i) continue;
-          const tl = allLines[j].text;
-          const tNums = tl.match(/[\d.]+/g);
-          if (tNums && tNums.length >= 2 && !tl.includes("%")) {
-            // Two numbers without percentage = Previous Total, Current Total
-            info.total_score = parseFloat(tNums[1]) || parseFloat(tNums[0]) || 0;
-            break;
-          }
-        }
-        break;
       }
+      break;
     }
   }
 
-  // Strategy 2: Try "Previous Total Score" + "Current Score" on same header line (some PDFs)
+  // Strategy 2: Find "Summary" heading → "Section Summary" range, value line with percentage
   if (info.current_score === 0) {
-    for (let i = 0; i < allLines.length - 1; i++) {
-      const lt = allLines[i].text;
-      if (lt.includes("Previous Total Score") && lt.includes("Current Score")) {
-        const valLine = allLines[i + 1].text;
-        const nums = valLine.match(/[\d.]+/g);
-        if (nums && nums.length >= 4) {
-          info.total_score = parseFloat(nums[2]) || parseFloat(nums[0]);
-          info.current_score = parseFloat(nums[3]) || 0;
-          info.previous_score = parseFloat(nums[1]) || 0;
-          const pctM = valLine.match(/([\d.]+)%/);
-          if (pctM) info.percentage = parseFloat(pctM[1]);
-          const diffM = valLine.match(/(-[\d.]+%)/);
+    let summaryIdx = -1, sectionSummaryIdx = -1;
+    for (let i = 0; i < allLines.length; i++) {
+      const lt = allLines[i].text.trim();
+      if (/^Summary$/i.test(lt) && summaryIdx === -1) summaryIdx = i;
+      if (/^Section\s*Summary$/i.test(lt)) { sectionSummaryIdx = i; break; }
+    }
+
+    if (summaryIdx >= 0) {
+      const endIdx = sectionSummaryIdx > summaryIdx ? sectionSummaryIdx : Math.min(summaryIdx + 15, allLines.length);
+      for (let i = summaryIdx + 1; i < endIdx; i++) {
+        const lt = allLines[i].text;
+        const pctMatch = lt.match(/([\d.]+)%/);
+        if (!pctMatch) continue;
+        const nums = lt.match(/[\d.]+/g);
+        if (nums && nums.length >= 2) {
+          info.previous_score = parseFloat(nums[0]) || 0;
+          info.current_score = parseFloat(nums[1]) || 0;
+          info.percentage = parseFloat(pctMatch[1]) || 0;
+          const diffM = lt.match(/(-[\d.]+%)/);
           if (diffM) info.difference = diffM[1];
           else {
-            const diffM2 = valLine.match(/([\d.]+%)\s*↓/);
-            if (diffM2) info.difference = "-" + diffM2[1];
+            const diffM2 = lt.match(/([\d.]+)%\s*↓/);
+            if (diffM2 && parseFloat(diffM2[1]) !== info.percentage) info.difference = "-" + diffM2[1] + "%";
             else {
-              const diffM3 = valLine.match(/([\d.]+%)\s*↑/);
-              if (diffM3) info.difference = "+" + diffM3[1];
+              const diffM3 = lt.match(/([\d.]+)%\s*↑/);
+              if (diffM3 && parseFloat(diffM3[1]) !== info.percentage) info.difference = "+" + diffM3[1] + "%";
             }
           }
+          for (let j = summaryIdx + 1; j < endIdx; j++) {
+            if (j === i) continue;
+            const tl = allLines[j].text;
+            const tNums = tl.match(/[\d.]+/g);
+            if (tNums && tNums.length >= 2 && !tl.includes("%")) {
+              info.total_score = parseFloat(tNums[1]) || parseFloat(tNums[0]) || 0;
+              break;
+            }
+          }
+          break;
         }
-        break;
       }
     }
   }
@@ -205,13 +200,38 @@ const parseAuditReport = (allPagesText) => {
   // ─── Build section map ───
   const sectionMap = {}; // questionId -> section name
   let currentSection = "";
-  for (const line of allLines) {
+  for (let idx = 0; idx < allLines.length; idx++) {
+    const line = allLines[idx];
     // Section header: "2. Access Control" or "9. Safety & Security" (NOT "2.1 ...")
     const secM = line.text.match(/^(\d{1,2})\.\s+([A-Za-z].+)/);
     if (secM && !line.text.match(/^\d+\.\d+\s/)) {
-      currentSection = secM[2]
+      let secName = secM[2]
         .replace(/\s*(Total\s*Score|Obtained|%\s*ACH).*$/i, "")
         .trim();
+      // Skip numbered list items (Critical Observations etc.) that aren't real sections.
+      // Real section headers have "Total Score", "Obtained", or "% ACH" on the same line or within 3 lines
+      let isRealSection = false;
+      for (let j = idx; j < Math.min(idx + 3, allLines.length); j++) {
+        if (/Total\s*Score|Obtained|%\s*ACH/i.test(allLines[j].text)) {
+          isRealSection = true;
+          break;
+        }
+      }
+      if (!isRealSection) continue;
+      // Check next line for continuation (e.g. "Merchandising", "Performance")
+      if (idx + 1 < allLines.length) {
+        const nextLine = allLines[idx + 1].text.trim();
+        // Continuation if it's a short word not matching score/data patterns
+        if (nextLine.length > 2 && nextLine.length < 40 &&
+            !/Total\s*Score|Obtained|%\s*ACH|^\d+[\.\s%]|Maximum|Earned|Deducted/i.test(nextLine) &&
+            !/^\d{1,2}\.\d{1,2}\s/.test(nextLine) &&
+            !/^\d+\s*\/\s*\d+/.test(nextLine)) {
+          secName += " " + nextLine;
+        }
+      }
+      // Clean trailing conjunctions
+      secName = secName.replace(/\s+(and|&|or)\s*$/i, "").trim();
+      currentSection = secName;
     }
     // Map question IDs to section
     const qm = line.text.match(/^(\d{1,2}\.\d{1,2})\s/);
@@ -219,92 +239,133 @@ const parseAuditReport = (allPagesText) => {
   }
 
   // ─── FIND NON-COMPLIANT ITEMS ───
-  // Strategy: scan each line. If it starts with X.Y and contains "No" → NC found.
-  // Also handle multi-line questions where "No" is on a continuation line.
+  // Strategy: scan each line starting with X.Y. If obtained < max in score → NC found.
+  // Handles: "No 0/3", "Poor 0/10", "Average 2/5", "Good 3/5", "Good 7/10" etc.
   const nonCompliances = [];
 
   for (let i = 0; i < allLines.length; i++) {
     const line = allLines[i];
     const lineText = line.text;
 
-    // Check if this line has a question number AND "No" AND a score
-    // Pattern: "X.Y question text No 0 / 3"
+    // Check if this line has a question number (X.Y pattern)
     const qMatch = lineText.match(/^(\d{1,2}\.\d{1,2})\s+(.+)/);
     if (!qMatch) continue;
 
     const qId = qMatch[1];
     const restOfLine = qMatch[2];
 
-    // Check if "No" appears in this line (as a standalone word)
-    const hasNoThisLine = /\bNo\b/.test(restOfLine) && !/\bNo\.\b/.test(restOfLine);
+    // Find score on this line or next few lines
+    let obtainedPts = -1, maxPts = -1, scoreLineIdx = -1;
 
-    // Check if "No" appears on the NEXT line (for multi-line questions)
-    let hasNoNextLine = false;
-    let noLineIdx = -1;
-    if (!hasNoThisLine) {
-      for (let j = i + 1; j <= Math.min(i + 3, allLines.length - 1); j++) {
+    // Check this line for score
+    const scoreThisLine = lineText.match(/(\d+)\s*\/\s*(\d+)/);
+    if (scoreThisLine) {
+      obtainedPts = parseInt(scoreThisLine[1]);
+      maxPts = parseInt(scoreThisLine[2]);
+      scoreLineIdx = i;
+    }
+
+    // Check next few lines for score (multi-line questions)
+    if (maxPts < 0) {
+      for (let j = i + 1; j <= Math.min(i + 4, allLines.length - 1); j++) {
         const nextText = allLines[j].text;
-        // Stop if we hit another question
+        // Stop if we hit another X.Y question
         if (nextText.match(/^\d{1,2}\.\d{1,2}\s/)) break;
-        if (/\bNo\b/.test(nextText)) {
-          hasNoNextLine = true;
-          noLineIdx = j;
+        const scoreNext = nextText.match(/(\d+)\s*\/\s*(\d+)/);
+        if (scoreNext) {
+          obtainedPts = parseInt(scoreNext[1]);
+          maxPts = parseInt(scoreNext[2]);
+          scoreLineIdx = j;
           break;
         }
-        if (/\b(Yes|NA)\b/.test(nextText)) break; // it's Yes/NA, skip
       }
     }
 
-    if (!hasNoThisLine && !hasNoNextLine) continue;
+    // Skip if no score found, or full marks (no points lost)
+    if (maxPts <= 0 || obtainedPts >= maxPts) continue;
 
-    // Extract score from line with "No"
-    let maxPts = 3, obtainedPts = 0;
-    const scoreLine = hasNoThisLine ? lineText : (noLineIdx >= 0 ? allLines[noLineIdx].text : "");
-    const scoreM = scoreLine.match(/(\d+)\s*\/\s*(\d+)/);
-    if (scoreM) {
-      obtainedPts = parseInt(scoreM[1]);
-      maxPts = parseInt(scoreM[2]);
-    }
+    // Also skip if this is just "No" answer on a Yes/No question but has no score
+    // (already handled above since maxPts would be <= 0)
 
     // Build full question text
     let questionText = restOfLine;
-    // Strip "No", score from this line
+    // Strip rating words, answer words, and score from the question line
     questionText = questionText
+      .replace(/\s+(No|Poor|Average|Good|Excellent)\s+\d+\s*\/\s*\d+.*$/i, "")
+      .replace(/\s+(No|Poor|Average|Good|Excellent)\s*$/i, "")
       .replace(/\s+No\s+\d+\s*\/\s*\d+.*$/, "")
       .replace(/\s+No\s*$/, "")
       .replace(/\s+\d+\s*\/\s*\d+.*$/, "")
       .trim();
 
-    // Collect continuation lines (question text that wraps to next line)
-    const noIdx = hasNoNextLine ? noLineIdx : i;
-    let contEndIdx = noIdx;
-    for (let j = noIdx + 1; j < Math.min(noIdx + 5, allLines.length); j++) {
+    // Collect continuation lines between question and score line (or after score line)
+    const afterIdx = scoreLineIdx > i ? scoreLineIdx : i;
+    let contEndIdx = afterIdx;
+    for (let j = (scoreLineIdx > i ? i + 1 : afterIdx + 1); j < Math.min(afterIdx + 5, allLines.length); j++) {
+      if (j === scoreLineIdx) continue; // skip the score line itself
       const lt = allLines[j].text;
-      // Stop if next question, section, answer line, or score header
+      // Stop if next question, section, answer+score line, score header, or Comments
       if (lt.match(/^\d{1,2}\.\d{1,2}\s/) || lt.match(/^\d{1,2}\.\s+[A-Z]/) ||
-          lt.match(/\b(Yes|No|NA)\b.*\d+\s*\/\s*\d+/) || lt.match(/^Total\s*Score/i) ||
-          lt.match(/^%\s*ACH/i) || lt.match(/^Obtained/i)) break;
+          lt.match(/\b(Yes|No|Poor|Average|Good|Excellent)\b.*\d+\s*\/\s*\d+/) || lt.match(/^Total\s*Score/i) ||
+          lt.match(/^%\s*ACH/i) || lt.match(/^Obtained/i) || lt.match(/^Comments:/i)) break;
       if (lt.match(/^\d+\s*\/\s*\d+$/) || lt.match(/^\d+\.?\d*%$/)) { contEndIdx = j; continue; }
-      if (lt.length > 3 && lt.length < 200) {
+      if (lt.length > 3 && lt.length < 200 && j <= scoreLineIdx) {
+        // Only append pre-score lines as question continuation
         questionText += " " + lt;
         contEndIdx = j;
-      } else break;
+      }
+    }
+    // Also grab continuation lines AFTER the score line (for multi-line questions where score is mid-line)
+    if (scoreLineIdx > i) {
+      // Check lines between question start and score line
+      for (let j = i + 1; j < scoreLineIdx; j++) {
+        const lt = allLines[j].text;
+        if (lt.match(/^\d{1,2}\.\d{1,2}\s/) || lt.match(/^Comments:/i)) break;
+        if (lt.match(/\b(Yes|No|Poor|Average|Good|Excellent)\b.*\d+\s*\/\s*\d+/)) break;
+        if (lt.length > 3 && lt.length < 200 && !lt.match(/^\d+\s*\/\s*\d+$/)) {
+          questionText += " " + lt;
+        }
+      }
+    }
+    // Check line right after score for question text continuation (e.g. "Service for OTC and Non-Pharma Products)")
+    const lineAfterScore = scoreLineIdx + 1 < allLines.length ? allLines[scoreLineIdx + 1].text : "";
+    if (lineAfterScore.length > 3 && lineAfterScore.length < 200 &&
+        !lineAfterScore.match(/^\d{1,2}[\.\s]/) && !lineAfterScore.match(/^Comments/i) &&
+        !lineAfterScore.match(/^Total\s*Score/i) && !lineAfterScore.match(/\d+\s*\/\s*\d+/) &&
+        !lineAfterScore.match(/^\d+\.?\d*%$/) &&
+        // Heuristic: continuation lines are short and don't start with "-" (comment bullet)
+        !lineAfterScore.startsWith("-") && lineAfterScore.length < 80) {
+      questionText += " " + lineAfterScore;
+      contEndIdx = scoreLineIdx + 1;
     }
     questionText = questionText.replace(/\s+/g, " ").trim();
 
-    // Collect auditor comments: lines AFTER continuation ends, before next question
+    // Collect auditor comments
+    const commentStartIdx = Math.max(contEndIdx, scoreLineIdx) + 1;
     const commentParts = [];
-    for (let j = contEndIdx + 1; j < Math.min(contEndIdx + 10, allLines.length); j++) {
+    for (let j = commentStartIdx; j < Math.min(commentStartIdx + 20, allLines.length); j++) {
       const lt = allLines[j].text;
-      // Stop at next question, section header, or answer line
+      // Stop at next question or section header
       if (lt.match(/^\d{1,2}\.\d{1,2}\s/) || lt.match(/^\d{1,2}\.\s+[A-Z]/) ||
-          lt.match(/\b(Yes|No|NA)\b.*\d+\s*\/\s*\d+/) || lt.match(/^Total\s*Score/i) ||
+          lt.match(/\b(Yes|No|Poor|Average|Good|Excellent)\b.*\d+\s*\/\s*\d+/) || lt.match(/^Total\s*Score/i) ||
           lt.match(/^%\s*ACH/i) || lt.match(/^Obtained/i)) break;
       // Skip pure score lines
       if (lt.match(/^\d+\s*\/\s*\d+$/) || lt.match(/^\d+\.?\d*%$/)) continue;
+      // Handle "Comments:" prefix — strip it
+      if (/^Comments:\s*/i.test(lt)) {
+        const afterPrefix = lt.replace(/^Comments:\s*/i, "").trim();
+        if (afterPrefix.length > 2) commentParts.push(afterPrefix);
+        continue;
+      }
+      if (/Comments:\s*-/i.test(lt)) {
+        const afterPrefix = lt.replace(/.*Comments:\s*/i, "").trim();
+        if (afterPrefix.length > 2) commentParts.push(afterPrefix);
+        continue;
+      }
       if (lt.length > 3) commentParts.push(lt);
     }
-    const comment = commentParts.join(" ").trim();
+    let comment = commentParts.join(" ").trim();
+    if (comment.length > 300) comment = comment.substring(0, 297) + "...";
 
     const section = sectionMap[qId] || "";
 
