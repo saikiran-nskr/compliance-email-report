@@ -436,14 +436,13 @@ export default function ComplianceReport() {
   const sendEmail = async () => {
     // Build email-compatible HTML using ONLY tables (no CSS grid/flexbox)
     const scores = [
-      {l:"Current Score",v:`${info.current_score}/${info.total_score}`,c:"#111827"},
-      {l:"Achievement",v:`${info.percentage}%`,c:(info.percentage||0)>=90?"#059669":"#dc2626"},
-      {l:"Previous",v:`${info.previous_score}/${info.total_score}`,c:"#111827"},
+      {l:"Current Score",v:`${info.percentage}%`,c:(info.percentage||0)>=90?"#059669":"#dc2626"},
+      {l:"Previous",v:`${info.total_score > 0 ? Math.round((info.previous_score/info.total_score)*10000)/100 : 0}%`,c:"#111827"},
       {l:"Difference",v:info.difference||"—",c:String(info.difference).startsWith("-")?"#dc2626":"#059669"},
     ];
 
     const scoresCells = scores.map(s =>
-      `<td style="width:25%;text-align:center;padding:14px 8px;background:#f9fafb;border:1px solid #e5e7eb;">
+      `<td style="width:33%;text-align:center;padding:14px 8px;background:#f9fafb;border:1px solid #e5e7eb;">
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:6px;font-family:monospace;">${s.l}</div>
         <div style="font-size:20px;font-weight:bold;color:${s.c};">${s.v}</div>
       </td>`
@@ -555,9 +554,8 @@ export default function ComplianceReport() {
             {/* Scores */}
             <div style={S.sGrid}>
               {[
-                {l:"Current Score",v:`${info.current_score}/${info.total_score}`},
-                {l:"Achievement",v:`${info.percentage}%`,c:(info.percentage||0)>=90?"#059669":"#dc2626"},
-                {l:"Previous",v:`${info.previous_score}/${info.total_score}`},
+                {l:"Current Score",v:`${info.percentage}%`,c:(info.percentage||0)>=90?"#059669":"#dc2626"},
+                {l:"Previous",v:`${info.total_score > 0 ? Math.round((info.previous_score/info.total_score)*10000)/100 : 0}%`,c:"#111827"},
                 {l:"Difference",v:info.difference||"—",c:String(info.difference).startsWith("-")?"#dc2626":"#059669"},
               ].map((s,i)=><div key={i} style={S.sBox}><div style={S.sLbl}>{s.l}</div><div style={{...S.sVal,color:s.c||"#111"}}>{s.v}</div></div>)}
             </div>
@@ -648,7 +646,7 @@ const S={
   greet:{fontSize:".92rem",marginBottom:14,color:"#374151"},
   bTxt:{fontSize:".86rem",lineHeight:1.65,color:"#4b5563"},
 
-  sGrid:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,margin:"20px 0 28px"},
+  sGrid:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,margin:"20px 0 28px"},
   sBox:{background:"#f9fafb",border:"1px solid #e5e7eb",borderRadius:10,padding:"14px 10px",textAlign:"center"},
   sLbl:{fontFamily:"'JetBrains Mono',monospace",fontSize:".55rem",fontWeight:600,letterSpacing:".08em",textTransform:"uppercase",color:"#9ca3af",marginBottom:6},
   sVal:{fontSize:"1.15rem",fontWeight:700},
