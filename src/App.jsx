@@ -643,7 +643,7 @@ export default function ComplianceReport() {
           <p style={S.sub}>Upload your audit PDF — parses directly to extract non-compliances and auditor comments.</p>
           <div onDragOver={e=>{e.preventDefault();setDragOver(true)}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop} onClick={()=>!loading&&inputRef.current?.click()}
             style={{...S.drop,borderColor:dragOver?"#e11d48":file?"#34d399":"#d1d5db",background:dragOver?"rgba(225,29,72,.03)":file?"rgba(52,211,153,.03)":"#fafafa",cursor:loading?"wait":"pointer"}}>
-            <input ref={inputRef} type="file" accept=".pdf" style={{display:"none"}} onChange={e=>handleFile(e.target.files?.[0])}/>
+            <input ref={inputRef} type="file" accept=".pdf,.PDF,application/pdf" style={{display:"none"}} onChange={e=>handleFile(e.target.files?.[0])}/>
             {!file?(
               <><div style={S.upIcon}><svg width="30" height="30" fill="none" viewBox="0 0 24 24" stroke="#e11d48" strokeWidth="1.5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"/></svg></div>
               <div style={{fontSize:".93rem",fontWeight:600,color:"#374151"}}>Drop audit PDF here or click to browse</div></>
