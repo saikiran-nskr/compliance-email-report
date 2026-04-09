@@ -590,7 +590,8 @@ export default function ComplianceReport() {
 
   const handleFile = useCallback((f) => {
     if (!f) return;
-    if (f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf")) { setError("Please upload a PDF file."); return; }
+    const isPdf = f.type === "application/pdf" || f.type === "application/x-pdf" || f.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) { setError("Please upload a PDF file."); return; }
     setError(""); setData(null); setFile(f); setFileName(f.name);
   }, []);
 
