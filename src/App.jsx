@@ -590,8 +590,6 @@ export default function ComplianceReport() {
 
   const handleFile = useCallback((f) => {
     if (!f) return;
-    const isPdf = f.type === "application/pdf" || f.type === "application/x-pdf" || f.name.toLowerCase().endsWith(".pdf");
-    if (!isPdf) { setError("Please upload a PDF file."); return; }
     setError(""); setData(null); setFile(f); setFileName(f.name);
   }, []);
 
@@ -604,7 +602,9 @@ export default function ComplianceReport() {
       setProgress("Loading PDF engine...");
       const pdfjsLib = await loadPdfJs();
 
-      const buf = await file.arrayBuffer();
+      let buf;
+      try { buf = await file.arrayBuffer(); }
+      catch { throw new Error("Could not read the file. If it is open in Adobe Acrobat, please close it first and try again."); }
       const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
       const totalPages = pdf.numPages;
 
