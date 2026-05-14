@@ -781,7 +781,7 @@ export default function ComplianceReport() {
 
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:16px 0 24px;"><tr>${scoresCells}</tr></table>
 
-      <div style="text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:2px;color:#e11d48;font-weight:bold;margin:20px 0 12px;">Non-Compliance Summary</div>
+      <div style="text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:2px;color:#e11d48;font-weight:bold;margin:20px 0 12px;">Non-Compliance Section &amp; Questions</div>
 
       ${ncs.length === 0 ? `<p style="text-align:center;color:#059669;font-weight:bold;">All Clear — No non-compliance items found.</p>` : `
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
@@ -873,7 +873,7 @@ export default function ComplianceReport() {
             </div>
 
             {/* SUMMARY TABLE */}
-            <div style={S.secHead}><div style={S.secLine}/><span style={S.secTag}>NON-COMPLIANCE SUMMARY</span><div style={S.secLine}/></div>
+            <div style={S.secHead}><div style={S.secLine}/><span style={S.secTag}>NON-COMPLIANCE SECTION &amp; QUESTIONS</span><div style={S.secLine}/></div>
 
             {ncs.length === 0 ? (
               <div style={{textAlign:"center",padding:"2rem",color:"#059669",fontWeight:600,fontSize:".9rem"}}>
