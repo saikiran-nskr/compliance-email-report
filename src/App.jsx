@@ -244,6 +244,9 @@ const parseAuditReport = (allPagesText) => {
     if (secM && !line.text.match(/^\d+\.\d+\s/)) {
       let secName = secM[2]
         .replace(/\s*(Total\s*Score|Obtained|%\s*ACH).*$/i, "")
+        .replace(/\s*:?\s*[\d.]+\s[\d.%].*$/i, "")   // strip OCR score remnants e.g. ":8.0 72.73%..."
+        .replace(/\s*[\d.]+%.*$/i, "")                 // strip leading percentage e.g. "72.73% 27.27%)"
+        .replace(/[()[\]]+\s*$/, "")                   // strip trailing brackets
         .trim();
       // Skip numbered list items (Critical Observations etc.) that aren't real sections.
       // Real section headers have "Total Score", "Obtained", or "% ACH" on the same line or within 3 lines
@@ -380,25 +383,34 @@ const parseAuditReport = (allPagesText) => {
     // Collect auditor comments
     const commentStartIdx = Math.max(contEndIdx, scoreLineIdx) + 1;
     const commentParts = [];
+
+    // Detect OCR noise from embedded evidence photos (high ratio of non-alphanumeric chars)
+    const isOcrNoise = (t) => {
+      const noise = (t.match(/[|[\]{}=~^\\/<>—–]/g) || []).length;
+      return noise > 2 || (t.length > 5 && noise / t.length > 0.15);
+    };
+
     for (let j = commentStartIdx; j < Math.min(commentStartIdx + 20, allLines.length); j++) {
       const lt = allLines[j].text;
       // Stop at next question or section header
       if (lt.match(/^\d{1,2}\.\d{1,2}\s/) || lt.match(/^\d{1,2}\.\s+[A-Z]/) ||
           lt.match(/\b(Yes|No|Poor|Average|Good|Excellent)\b.*\d+\s*\/\s*\d+/) || lt.match(/^Total\s*Score/i) ||
           lt.match(/^%\s*ACH/i) || lt.match(/^Obtained/i)) break;
-      // Skip pure score lines
+      // Skip pure score lines and OCR noise from embedded photos
       if (lt.match(/^\d+\s*\/\s*\d+$/) || lt.match(/^\d+\.?\d*%$/)) continue;
-      // Handle "Comments:" prefix — strip it
+      if (isOcrNoise(lt)) continue;
+      // Handle "Comments:" prefix — extract and stop (don't keep scanning after it)
       if (/^Comments:\s*/i.test(lt)) {
         const afterPrefix = lt.replace(/^Comments:\s*/i, "").trim();
-        if (afterPrefix.length > 2) commentParts.push(afterPrefix);
-        continue;
+        if (afterPrefix.length > 2 && !isOcrNoise(afterPrefix)) commentParts.push(afterPrefix);
+        break;
       }
-      if (/Comments:\s*-/i.test(lt)) {
+      if (/Comments:\s*./i.test(lt)) {
         const afterPrefix = lt.replace(/.*Comments:\s*/i, "").trim();
-        if (afterPrefix.length > 2) commentParts.push(afterPrefix);
-        continue;
+        if (afterPrefix.length > 2 && !isOcrNoise(afterPrefix)) commentParts.push(afterPrefix);
+        break;
       }
+      // Only keep clean lines (not OCR garbage from embedded photos)
       if (lt.length > 3) commentParts.push(lt);
     }
     let comment = commentParts.join(" ").trim();
