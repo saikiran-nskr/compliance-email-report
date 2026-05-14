@@ -1,11 +1,8 @@
-name: Deploy Compliance App to GitHub Pages
+name: Deploy to GitHub Pages
 
 on:
   push:
     branches: ['main']
-    paths:
-      - 'Desktop/compliance-app/**'
-
   workflow_dispatch:
 
 permissions:
@@ -26,14 +23,11 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-          cache-dependency-path: Desktop/compliance-app/package.json
       - run: npm install
-        working-directory: Desktop/compliance-app
       - run: npm run build
-        working-directory: Desktop/compliance-app
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: Desktop/compliance-app/dist
+          path: './dist'
 
   deploy:
     environment:
