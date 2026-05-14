@@ -390,28 +390,19 @@ const parseAuditReport = (allPagesText) => {
       return noise > 2 || (t.length > 5 && noise / t.length > 0.15);
     };
 
-    for (let j = commentStartIdx; j < Math.min(commentStartIdx + 20, allLines.length); j++) {
+    // Only capture text that follows an explicit "Comments:" label — nothing else
+    for (let j = commentStartIdx; j < Math.min(commentStartIdx + 25, allLines.length); j++) {
       const lt = allLines[j].text;
       // Stop at next question or section header
       if (lt.match(/^\d{1,2}\.\d{1,2}\s/) || lt.match(/^\d{1,2}\.\s+[A-Z]/) ||
-          lt.match(/\b(Yes|No|Poor|Average|Good|Excellent)\b.*\d+\s*\/\s*\d+/) || lt.match(/^Total\s*Score/i) ||
-          lt.match(/^%\s*ACH/i) || lt.match(/^Obtained/i)) break;
-      // Skip pure score lines and OCR noise from embedded photos
-      if (lt.match(/^\d+\s*\/\s*\d+$/) || lt.match(/^\d+\.?\d*%$/)) continue;
-      if (isOcrNoise(lt)) continue;
-      // Handle "Comments:" prefix — extract and stop (don't keep scanning after it)
-      if (/^Comments:\s*/i.test(lt)) {
-        const afterPrefix = lt.replace(/^Comments:\s*/i, "").trim();
+          lt.match(/\b(Yes|No|Poor|Average|Good|Excellent)\b.*\d+\s*\/\s*\d+/) ||
+          lt.match(/^Total\s*Score/i) || lt.match(/^%\s*ACH/i) || lt.match(/^Obtained/i)) break;
+      // "Comments: some text" — grab text after the label and stop
+      if (/Comments?\s*:/i.test(lt)) {
+        const afterPrefix = lt.replace(/.*Comments?\s*:\s*/i, "").trim();
         if (afterPrefix.length > 2 && !isOcrNoise(afterPrefix)) commentParts.push(afterPrefix);
         break;
       }
-      if (/Comments:\s*./i.test(lt)) {
-        const afterPrefix = lt.replace(/.*Comments:\s*/i, "").trim();
-        if (afterPrefix.length > 2 && !isOcrNoise(afterPrefix)) commentParts.push(afterPrefix);
-        break;
-      }
-      // Only keep clean lines (not OCR garbage from embedded photos)
-      if (lt.length > 3) commentParts.push(lt);
     }
     let comment = commentParts.join(" ").trim();
     if (comment.length > 300) comment = comment.substring(0, 297) + "...";
