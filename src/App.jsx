@@ -30,7 +30,44 @@ const getPageTextItems = async (page) => {
   }).filter(i => i.text.length > 0);
 };
 
-/* ─── Render page to canvas for image cropping ─── */
+/* ─── Tesseract.js OCR loader ─── */
+const loadTesseract = () => new Promise((resolve, reject) => {
+  if (window.Tesseract) { resolve(window.Tesseract); return; }
+  const s = document.createElement("script");
+  s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+  s.onload = () => resolve(window.Tesseract);
+  s.onerror = reject;
+  document.head.appendChild(s);
+});
+
+/* ─── Render a PDF page to canvas ─── */
+const renderPageToCanvas = async (page, scale = 2.5) => {
+  const vp = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = vp.width;
+  canvas.height = vp.height;
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  return { canvas, scale };
+};
+
+/* ─── OCR a canvas → items in the same format as getPageTextItems ─── */
+const ocrPageToItems = async (worker, canvas, scale) => {
+  const { data } = await worker.recognize(canvas);
+  const items = [];
+  for (const word of (data.words || [])) {
+    const t = word.text.trim();
+    if (!t) continue;
+    items.push({
+      text: t,
+      x:      word.bbox.x0 / scale,
+      y:      word.bbox.y0 / scale,
+      height: (word.bbox.y1 - word.bbox.y0) / scale,
+      width:  (word.bbox.x1 - word.bbox.x0) / scale,
+    });
+  }
+  return items;
+};
+
 /* ─── Main parser: extract all structured data from PDF text ─── */
 const parseAuditReport = (allPagesText) => {
   // Build lines grouped by Y position per page
@@ -610,15 +647,37 @@ export default function ComplianceReport() {
 
       // Extract text from all pages
       const allPagesText = [];
+      const rawPages = [];
 
       for (let i = 1; i <= totalPages; i++) {
         setProgress(`Reading page ${i}/${totalPages}...`);
         const page = await pdf.getPage(i);
+        rawPages.push(page);
         const items = await getPageTextItems(page);
         allPagesText.push(items);
       }
 
-      setProgress("Parsing audit data...");
+      // Detect image-based PDF: if total extracted chars < 50, fall back to OCR
+      const totalChars = allPagesText.flat().reduce((n, it) => n + it.text.length, 0);
+      if (totalChars < 50) {
+        setProgress("Image-based PDF detected — loading OCR engine…");
+        const Tesseract = await loadTesseract();
+        const worker = await Tesseract.createWorker("eng", 1, {
+          workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
+          langPath: "https://tessdata.projectnaptha.com/4.0.0",
+          corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js",
+          logger: () => {},
+        });
+        for (let i = 0; i < totalPages; i++) {
+          setProgress(`OCR page ${i + 1}/${totalPages}…`);
+          const { canvas, scale } = await renderPageToCanvas(rawPages[i], 2.5);
+          const items = await ocrPageToItems(worker, canvas, 2.5);
+          allPagesText[i] = items;
+        }
+        await worker.terminate();
+      }
+
+      setProgress("Parsing audit data…");
       const { info, nonCompliances } = parseAuditReport(allPagesText);
 
       setData({ info, nonCompliances });
