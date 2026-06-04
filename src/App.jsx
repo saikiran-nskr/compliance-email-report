@@ -69,13 +69,17 @@ const ocrPageToItems = async (worker, canvas, scale) => {
 };
 
 /* ─── Main parser: extract all structured data from PDF text ─── */
-const parseAuditReport = (allPagesText) => {
+const parseAuditReport = (allPagesText, { ocrMode = false } = {}) => {
+  // OCR mode uses a larger Y-bucket (10 vs 5) because Tesseract bounding boxes are
+  // less precise — word tops on the same visual line can vary by up to ~8 points,
+  // causing the same line to split into multiple groups with bucket=5.
+  const yBucket = ocrMode ? 10 : 5;
   // Build lines grouped by Y position per page
   const allLines = [];
   allPagesText.forEach((pageItems, pgIdx) => {
     const lineMap = {};
     pageItems.forEach(item => {
-      const yKey = Math.round(item.y / 5) * 5;
+      const yKey = Math.round(item.y / yBucket) * yBucket;
       if (!lineMap[yKey]) lineMap[yKey] = [];
       lineMap[yKey].push(item);
     });
@@ -690,13 +694,13 @@ export default function ComplianceReport() {
       }
 
       setProgress("Parsing audit data…");
-      const { info, nonCompliances } = parseAuditReport(allPagesText);
+      const { info, nonCompliances } = parseAuditReport(allPagesText, { ocrMode: needsOcr });
 
       // Safety net: if no NCs found but score is below 100%, text extraction may have
       // produced garbled content — retry with OCR
       if (nonCompliances.length === 0 && info.percentage > 0 && info.percentage < 100 && !needsOcr) {
         await runOcrPass("Re-checking with OCR (text extraction found no issues)…");
-        const { info: ocrInfo, nonCompliances: ocrNcs } = parseAuditReport(allPagesText);
+        const { info: ocrInfo, nonCompliances: ocrNcs } = parseAuditReport(allPagesText, { ocrMode: true });
         setData({ info: ocrInfo, nonCompliances: ocrNcs });
       } else {
         setData({ info, nonCompliances });
