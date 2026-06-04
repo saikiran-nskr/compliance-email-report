@@ -306,8 +306,9 @@ const parseAuditReport = (allPagesText) => {
     }
 
     // Check next few lines for score (multi-line questions)
+    // Use 8 lines — OCR word-grouping can split long questions further than text mode
     if (maxPts < 0) {
-      for (let j = i + 1; j <= Math.min(i + 4, allLines.length - 1); j++) {
+      for (let j = i + 1; j <= Math.min(i + 8, allLines.length - 1); j++) {
         const nextText = allLines[j].text;
         // Stop if we hit another X.Y question
         if (nextText.match(/^\d{1,2}\.\d{1,2}\s/)) break;
@@ -660,10 +661,14 @@ export default function ComplianceReport() {
         allPagesText.push(items);
       }
 
-      // Detect image-based PDF: if total extracted chars < 50, fall back to OCR
+      // Detect image-based PDF or garbled font encoding: fall back to OCR
       const totalChars = allPagesText.flat().reduce((n, it) => n + it.text.length, 0);
-      if (totalChars < 50) {
-        setProgress("Image-based PDF detected — loading OCR engine…");
+      const extractedText = allPagesText.flat().map(i => i.text).join(' ');
+      const hasQuestionNumbers = /\b\d{1,2}\.\d{1,2}\b/.test(extractedText);
+      const needsOcr = totalChars < 100 || !hasQuestionNumbers;
+
+      const runOcrPass = async (label) => {
+        setProgress(label);
         const Tesseract = await loadTesseract();
         const worker = await Tesseract.createWorker("eng", 1, {
           workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
@@ -673,17 +678,29 @@ export default function ComplianceReport() {
         });
         for (let i = 0; i < totalPages; i++) {
           setProgress(`OCR page ${i + 1}/${totalPages}…`);
-          const { canvas, scale } = await renderPageToCanvas(rawPages[i], 2.5);
+          const { canvas } = await renderPageToCanvas(rawPages[i], 2.5);
           const items = await ocrPageToItems(worker, canvas, 2.5);
           allPagesText[i] = items;
         }
         await worker.terminate();
+      };
+
+      if (needsOcr) {
+        await runOcrPass("Image-based PDF detected — loading OCR engine…");
       }
 
       setProgress("Parsing audit data…");
       const { info, nonCompliances } = parseAuditReport(allPagesText);
 
-      setData({ info, nonCompliances });
+      // Safety net: if no NCs found but score is below 100%, text extraction may have
+      // produced garbled content — retry with OCR
+      if (nonCompliances.length === 0 && info.percentage > 0 && info.percentage < 100 && !needsOcr) {
+        await runOcrPass("Re-checking with OCR (text extraction found no issues)…");
+        const { info: ocrInfo, nonCompliances: ocrNcs } = parseAuditReport(allPagesText);
+        setData({ info: ocrInfo, nonCompliances: ocrNcs });
+      } else {
+        setData({ info, nonCompliances });
+      }
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to parse PDF.");
